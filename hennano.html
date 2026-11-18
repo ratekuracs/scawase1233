@@ -1,0 +1,660 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MIDI → Scratch タイミングリスト変換ツール</title>
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+        Roboto, sans-serif;
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 0 20px;
+      line-height: 1.6;
+      color: #333;
+      background-color: #f9f9fb;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      color: #4d97ff;
+      border-bottom: 2px solid #4d97ff;
+      padding-bottom: 8px;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-weight: bold;
+      margin-bottom: 6px;
+    }
+
+    input[type="file"],
+    input[type="number"] {
+      width: 100%;
+      padding: 8px;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+
+    .radio-group {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .radio-group label {
+      font-weight: normal;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+
+    .hint {
+      font-size: 0.85rem;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    button {
+      background-color: #4d97ff;
+      color: #fff;
+      border: none;
+      padding: 12px 20px;
+      font-size: 1rem;
+      font-weight: bold;
+      border-radius: 6px;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    button:hover {
+      background-color: #3373cc;
+    }
+
+    button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+
+    textarea {
+      width: 100%;
+      height: 220px;
+      font-family: monospace;
+      font-size: 0.95rem;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-sizing: border-box;
+      resize: vertical;
+    }
+
+    .status {
+      font-weight: bold;
+      color: #0f9d58;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>MIDI → Scratch タイミングリスト変換ツール</h1>
+
+  <div class="card">
+
+    <div class="form-group">
+      <label for="midiFile">
+        1. MIDIファイル (.mid / .midi) を選択
+      </label>
+      <input type="file" id="midiFile" accept=".mid,.midi">
+    </div>
+
+    <div class="form-group">
+      <label>2. BPM（テンポ）の設定</label>
+
+      <div class="radio-group">
+        <label>
+          <input type="radio" name="bpmMode" value="auto" checked>
+          MIDI内のBPMを自動使用（無ければ120）
+        </label>
+
+        <label>
+          <input type="radio" name="bpmMode" value="manual">
+          BPMを手動で指定する
+        </label>
+      </div>
+
+      <input
+        type="number"
+        id="manualBpm"
+        value="120"
+        min="1"
+        max="999"
+        step="0.1"
+        disabled
+      >
+
+      <div class="hint" id="detectedBpmText">
+        MIDI読み込み後に検出されたBPMが表示されます。
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="chordThreshold">
+        3. 和音（同時押し）まとめ判定時間（秒）
+      </label>
+
+      <input
+        type="number"
+        id="chordThreshold"
+        value="0.02"
+        min="0"
+        max="1"
+        step="0.005"
+      >
+
+      <div class="hint">
+        この秒数以内に連続して鳴る音（和音やアルペジオのズレ）を
+        1つのタイミングにまとめます。
+        （0にすると完全に同じTickのみ統合）
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="offsetSec">
+        4. 全体のタイミング微調整・オフセット（秒）
+      </label>
+
+      <input
+        type="number"
+        id="offsetSec"
+        value="0"
+        step="0.01"
+      >
+
+      <div class="hint">
+        マイナス値を指定すると全体的に早いタイミングになります
+        （例: -0.05）。
+        0秒未満になった音は0になります。
+      </div>
+    </div>
+
+  </div>
+
+  <div class="card">
+
+    <div class="status" id="statusText">
+      MIDIファイルを選択してください。
+    </div>
+
+    <div class="form-group">
+      <label for="outputPreview">
+        生成結果プレビュー（Scratchリスト読み込み用）
+      </label>
+
+      <textarea
+        id="outputPreview"
+        readonly
+        placeholder="ここに秒数のリストが表示されます..."
+      ></textarea>
+    </div>
+
+    <button id="downloadBtn" disabled>
+      タイミングリスト (.txt) をダウンロード
+    </button>
+
+  </div>
+
+  <script>
+    let parsedMidiData = null;
+
+    const midiFileInput = document.getElementById("midiFile");
+    const bpmRadios = document.querySelectorAll(
+      'input[name="bpmMode"]'
+    );
+    const manualBpmInput = document.getElementById("manualBpm");
+    const detectedBpmText = document.getElementById("detectedBpmText");
+    const chordThresholdInput = document.getElementById("chordThreshold");
+    const offsetSecInput = document.getElementById("offsetSec");
+    const statusText = document.getElementById("statusText");
+    const outputPreview = document.getElementById("outputPreview");
+    const downloadBtn = document.getElementById("downloadBtn");
+
+    // BPMモード切替
+    bpmRadios.forEach((radio) => {
+      radio.addEventListener("change", () => {
+        manualBpmInput.disabled =
+          document.querySelector(
+            'input[name="bpmMode"]:checked'
+          ).value !== "manual";
+
+        updateOutput();
+      });
+    });
+
+    manualBpmInput.addEventListener("input", updateOutput);
+    chordThresholdInput.addEventListener("input", updateOutput);
+    offsetSecInput.addEventListener("input", updateOutput);
+
+    // MIDIファイル読み込み
+    midiFileInput.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+
+      if (!file) return;
+
+      const reader = new FileReader();
+
+      reader.onload = (event) => {
+        try {
+          parsedMidiData = parseMidi(
+            new Uint8Array(event.target.result)
+          );
+
+          const initialBpm =
+            parsedMidiData.tempos.length > 0
+              ? (
+                  60000000 /
+                  parsedMidiData.tempos[0].microsecondsPerBeat
+                ).toFixed(2)
+              : "120 (デフォルト)";
+
+          detectedBpmText.textContent =
+            `MIDI内の初期BPM: ${initialBpm}` +
+            `（テンポ変更イベント数: ${parsedMidiData.tempos.length}）`;
+
+          updateOutput();
+
+        } catch (err) {
+          parsedMidiData = null;
+
+          statusText.style.color = "#d93025";
+          statusText.textContent =
+            "エラー: MIDIファイルの解析に失敗しました。(" +
+            err.message + ")";
+
+          outputPreview.value = "";
+          downloadBtn.disabled = true;
+        }
+      };
+
+      reader.readAsArrayBuffer(file);
+    });
+
+    // ダウンロード処理
+    downloadBtn.addEventListener("click", () => {
+      const text = outputPreview.value;
+
+      if (!text) return;
+
+      const blob = new Blob(
+        [text],
+        { type: "text/plain;charset=utf-8" }
+      );
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+
+      const baseName =
+        midiFileInput.files[0]?.name.replace(/\.[^/.]+$/, "") ||
+        "timing";
+
+      a.href = url;
+      a.download = `${baseName}_scratch_timing.txt`;
+
+      a.click();
+
+      URL.revokeObjectURL(url);
+    });
+
+    // MIDIバイナリパーサー
+    // Standard MIDI File Format 0 & 1 対応
+    function parseMidi(data) {
+      let pos = 0;
+
+      function readStr(len) {
+        let s = "";
+
+        for (let i = 0; i < len; i++) {
+          s += String.fromCharCode(data[pos++]);
+        }
+
+        return s;
+      }
+
+      function readUint32() {
+        const val =
+          (data[pos] << 24) |
+          (data[pos + 1] << 16) |
+          (data[pos + 2] << 8) |
+          data[pos + 3];
+
+        pos += 4;
+
+        return val >>> 0;
+      }
+
+      function readUint16() {
+        const val =
+          (data[pos] << 8) |
+          data[pos + 1];
+
+        pos += 2;
+
+        return val;
+      }
+
+      function readVarLen() {
+        let val = 0;
+
+        while (true) {
+          const b = data[pos++];
+
+          val = (val << 7) | (b & 0x7f);
+
+          if ((b & 0x80) === 0) break;
+        }
+
+        return val;
+      }
+
+      if (readStr(4) !== "MThd") {
+        throw new Error("有効なMIDIヘッダがありません");
+      }
+
+      const headerLen = readUint32();
+      const format = readUint16();
+      const numTracks = readUint16();
+      const division = readUint16();
+
+      if (format > 1) {
+        throw new Error("MIDIフォーマット0・1のみ対応しています");
+      }
+
+      if (division & 0x8000) {
+        throw new Error("SMPTEタイムコード形式は非対応です");
+      }
+
+      const ticksPerBeat = division;
+
+      pos = 8 + headerLen;
+
+      const noteOnTicks = [];
+      const tempos = [];
+
+      for (let t = 0; t < numTracks; t++) {
+        if (pos >= data.length) break;
+
+        const chunkType = readStr(4);
+        const chunkLen = readUint32();
+        const trackEnd = pos + chunkLen;
+
+        if (trackEnd > data.length) {
+          throw new Error("MIDIトラックのデータが不完全です");
+        }
+
+        if (chunkType !== "MTrk") {
+          pos = trackEnd;
+          continue;
+        }
+
+        let currentTick = 0;
+        let runningStatus = 0;
+
+        while (pos < trackEnd) {
+          const delta = readVarLen();
+
+          currentTick += delta;
+
+          let statusByte = data[pos];
+
+          if (statusByte >= 0x80) {
+            pos++;
+
+            if (statusByte < 0xF0) {
+              runningStatus = statusByte;
+            }
+          } else {
+            statusByte = runningStatus;
+          }
+
+          const eventType = statusByte & 0xF0;
+
+          if (eventType === 0x90) {
+            // Note On
+            const note = data[pos++];
+            const velocity = data[pos++];
+
+            if (velocity > 0) {
+              noteOnTicks.push(currentTick);
+            }
+
+          } else if (
+            eventType === 0x80 ||
+            eventType === 0xA0 ||
+            eventType === 0xB0 ||
+            eventType === 0xE0
+          ) {
+            pos += 2;
+
+          } else if (
+            eventType === 0xC0 ||
+            eventType === 0xD0
+          ) {
+            pos += 1;
+
+          } else if (statusByte === 0xFF) {
+            // Meta Event
+            const metaType = data[pos++];
+            const metaLen = readVarLen();
+
+            if (metaType === 0x51 && metaLen === 3) {
+              // Set Tempo
+              const mpqn =
+                (data[pos] << 16) |
+                (data[pos + 1] << 8) |
+                data[pos + 2];
+
+              tempos.push({
+                tick: currentTick,
+                microsecondsPerBeat: mpqn
+              });
+            }
+
+            pos += metaLen;
+
+          } else if (
+            statusByte === 0xF0 ||
+            statusByte === 0xF7
+          ) {
+            // SysEx
+            const sysLen = readVarLen();
+
+            pos += sysLen;
+
+          } else {
+            throw new Error(
+              "不明なMIDIイベントを検出しました"
+            );
+          }
+
+          if (pos > trackEnd) {
+            throw new Error("トラックデータの範囲を超えました");
+          }
+        }
+
+        pos = trackEnd;
+      }
+
+      noteOnTicks.sort((a, b) => a - b);
+      tempos.sort((a, b) => a.tick - b.tick);
+
+      return {
+        ticksPerBeat,
+        noteOnTicks,
+        tempos
+      };
+    }
+
+    // Tickから秒数への変換・和音統合
+    function updateOutput() {
+      if (!parsedMidiData) return;
+
+      const {
+        ticksPerBeat,
+        noteOnTicks,
+        tempos
+      } = parsedMidiData;
+
+      const bpmMode = document.querySelector(
+        'input[name="bpmMode"]:checked'
+      ).value;
+
+      const manualBpm = parseFloat(manualBpmInput.value);
+      const chordThreshold = Math.max(
+        0,
+        parseFloat(chordThresholdInput.value) || 0
+      );
+
+      const offsetSec =
+        parseFloat(offsetSecInput.value) || 0;
+
+      // 入力値チェック
+      if (
+        bpmMode === "manual" &&
+        (!Number.isFinite(manualBpm) || manualBpm <= 0)
+      ) {
+        statusText.style.color = "#d93025";
+        statusText.textContent = "有効なBPMを入力してください。";
+        downloadBtn.disabled = true;
+        return;
+      }
+
+      // タイムマップ構築
+      const tempoMap = [];
+
+      if (bpmMode === "manual") {
+        tempoMap.push({
+          tick: 0,
+          mpqn: 60000000 / manualBpm
+        });
+
+      } else {
+        if (
+          tempos.length === 0 ||
+          tempos[0].tick > 0
+        ) {
+          tempoMap.push({
+            tick: 0,
+            mpqn: 500000
+          });
+        }
+
+        for (const t of tempos) {
+          tempoMap.push({
+            tick: t.tick,
+            mpqn: t.microsecondsPerBeat
+          });
+        }
+      }
+
+      // Tickを秒数に変換
+      function tickToSeconds(targetTick) {
+        let totalSec = 0;
+        let lastTick = 0;
+
+        let currentMpqn = tempoMap[0].mpqn;
+
+        for (let i = 1; i < tempoMap.length; i++) {
+          if (tempoMap[i].tick >= targetTick) {
+            break;
+          }
+
+          const deltaTicks =
+            tempoMap[i].tick - lastTick;
+
+          totalSec +=
+            (deltaTicks / ticksPerBeat) *
+            (currentMpqn / 1000000);
+
+          lastTick = tempoMap[i].tick;
+          currentMpqn = tempoMap[i].mpqn;
+        }
+
+        const remainingTicks =
+          targetTick - lastTick;
+
+        totalSec +=
+          (remainingTicks / ticksPerBeat) *
+          (currentMpqn / 1000000);
+
+        return totalSec;
+      }
+
+      // 秒数変換とオフセット適用
+      const rawSeconds = noteOnTicks.map((tick) =>
+        Math.max(
+          0,
+          tickToSeconds(tick) + offsetSec
+        )
+      );
+
+      // 和音・近接タイミング統合
+      const mergedSeconds = [];
+
+      for (const sec of rawSeconds) {
+        if (mergedSeconds.length === 0) {
+          mergedSeconds.push(sec);
+
+        } else {
+          const prev =
+            mergedSeconds[mergedSeconds.length - 1];
+
+          if (sec - prev > chordThreshold) {
+            mergedSeconds.push(sec);
+          }
+        }
+      }
+
+      // 小数第3位（ミリ秒単位）に整形
+      const formattedLines = mergedSeconds.map((s) =>
+        Number(s.toFixed(3)).toString()
+      );
+
+      outputPreview.value =
+        formattedLines.join("\n");
+
+      // 完了表示
+      statusText.style.color = "#0f9d58";
+
+      statusText.textContent =
+        `変換完了！ 全ノート数: ${noteOnTicks.length}` +
+        ` → 和音統合後のタイミング数: ${formattedLines.length}`;
+
+      downloadBtn.disabled =
+        formattedLines.length === 0;
+    }
+
+  </script>
+
+</body>
+</html>
