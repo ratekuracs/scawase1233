@@ -74,7 +74,70 @@
       margin-top: 4px;
     }
 
-    button {
+    /* トラック選択エリア */
+    .track-controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .btn-small {
+      background-color: #eef4ff;
+      color: #3373cc;
+      border: 1px solid #b8d2ff;
+      padding: 4px 10px;
+      font-size: 0.85rem;
+      font-weight: bold;
+      border-radius: 4px;
+      cursor: pointer;
+      width: auto;
+    }
+
+    .btn-small:hover {
+      background-color: #dce9ff;
+    }
+
+    .track-list {
+      max-height: 180px;
+      overflow-y: auto;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 8px 12px;
+      background-color: #fafafa;
+    }
+
+    .track-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 0;
+      border-bottom: 1px solid #eee;
+    }
+
+    .track-item:last-child {
+      border-bottom: none;
+    }
+
+    .track-item label {
+      font-weight: normal;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0;
+      cursor: pointer;
+      flex: 1;
+    }
+
+    .track-badge {
+      font-size: 0.8rem;
+      color: #555;
+      background: #e9ecef;
+      padding: 2px 8px;
+      border-radius: 12px;
+      white-space: nowrap;
+    }
+
+    button.primary-btn {
       background-color: #4d97ff;
       color: #fff;
       border: none;
@@ -86,11 +149,11 @@
       width: 100%;
     }
 
-    button:hover {
+    button.primary-btn:hover {
       background-color: #3373cc;
     }
 
-    button:disabled {
+    button.primary-btn:disabled {
       background-color: #ccc;
       cursor: not-allowed;
     }
@@ -128,8 +191,20 @@
       <input type="file" id="projectFile" accept=".mid,.midi,.dawproject">
     </div>
 
+    <div class="form-group" id="trackSelectionGroup" style="display: none;">
+      <label>2. 使用するトラックの選択</label>
+      <div class="track-controls">
+        <button type="button" class="btn-small" id="selectAllTracksBtn">すべて選択</button>
+        <button type="button" class="btn-small" id="deselectAllTracksBtn">すべて解除</button>
+      </div>
+      <div class="track-list" id="trackListContainer"></div>
+      <div class="hint">
+        チェックを入れたトラックのノートのみを結合してタイミングリストを生成します。
+      </div>
+    </div>
+
     <div class="form-group">
-      <label>2. BPM（テンポ）の設定</label>
+      <label>3. BPM（テンポ）の設定</label>
 
       <div class="radio-group">
         <label>
@@ -160,7 +235,7 @@
 
     <div class="form-group">
       <label for="chordThreshold">
-        3. 和音（同時押し）まとめ判定時間（秒）
+        4. 和音（同時押し）まとめ判定時間（秒）
       </label>
 
       <input
@@ -181,7 +256,7 @@
 
     <div class="form-group">
       <label for="offsetSec">
-        4. 全体のタイミング微調整・オフセット（秒）
+        5. 全体のタイミング微調整・オフセット（秒）
       </label>
 
       <input
@@ -218,7 +293,7 @@
       ></textarea>
     </div>
 
-    <button id="downloadBtn" disabled>
+    <button id="downloadBtn" class="primary-btn" disabled>
       タイミングリスト (.txt) をダウンロード
     </button>
 
@@ -228,14 +303,23 @@
     // 共通データ構造:
     // {
     //   sourceType: "midi" | "dawproject",
-    //   ticksPerBeat: number,        // 内部分解能 (DAWproject時は仮想TPQN=96000)
-    //   noteOnTicks: number[],       // ソート済みノート開始Tick
-    //   tempos: { tick: number, microsecondsPerBeat: number }[],
-    //   fixedSecondsNotes?: number[] // timeUnit="seconds" で記録されたノートがある場合
+    //   ticksPerBeat: number,
+    //   tracks: {
+    //     id: number,
+    //     name: string,
+    //     noteOnTicks: number[],
+    //     fixedSecondsNotes: number[]
+    //   }[],
+    //   tempos: { tick: number, microsecondsPerBeat: number }[]
     // }
     let parsedProjectData = null;
 
     const projectFileInput = document.getElementById("projectFile");
+    const trackSelectionGroup = document.getElementById("trackSelectionGroup");
+    const trackListContainer = document.getElementById("trackListContainer");
+    const selectAllTracksBtn = document.getElementById("selectAllTracksBtn");
+    const deselectAllTracksBtn = document.getElementById("deselectAllTracksBtn");
+
     const bpmRadios = document.querySelectorAll('input[name="bpmMode"]');
     const manualBpmInput = document.getElementById("manualBpm");
     const detectedBpmText = document.getElementById("detectedBpmText");
@@ -244,6 +328,21 @@
     const statusText = document.getElementById("statusText");
     const outputPreview = document.getElementById("outputPreview");
     const downloadBtn = document.getElementById("downloadBtn");
+
+    // トラック一括選択・解除
+    selectAllTracksBtn.addEventListener("click", () => {
+      trackListContainer
+        .querySelectorAll('input[type="checkbox"]')
+        .forEach((cb) => (cb.checked = true));
+      updateOutput();
+    });
+
+    deselectAllTracksBtn.addEventListener("click", () => {
+      trackListContainer
+        .querySelectorAll('input[type="checkbox"]')
+        .forEach((cb) => (cb.checked = false));
+      updateOutput();
+    });
 
     // BPMモード切替
     bpmRadios.forEach((radio) => {
@@ -257,6 +356,47 @@
     manualBpmInput.addEventListener("input", updateOutput);
     chordThresholdInput.addEventListener("input", updateOutput);
     offsetSecInput.addEventListener("input", updateOutput);
+
+    // トラック一覧UIの描画
+    function renderTrackList(tracks) {
+      trackListContainer.innerHTML = "";
+
+      if (!tracks || tracks.length === 0) {
+        trackSelectionGroup.style.display = "none";
+        return;
+      }
+
+      trackSelectionGroup.style.display = "block";
+
+      tracks.forEach((track, idx) => {
+        const noteCount =
+          track.noteOnTicks.length + track.fixedSecondsNotes.length;
+
+        const itemDiv = document.createElement("div");
+        itemDiv.className = "track-item";
+
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = idx;
+        checkbox.checked = noteCount > 0; // ノートがあるトラックを初期選択
+        checkbox.addEventListener("change", updateOutput);
+
+        const titleSpan = document.createElement("span");
+        titleSpan.textContent = track.name;
+
+        label.appendChild(checkbox);
+        label.appendChild(titleSpan);
+
+        const badge = document.createElement("span");
+        badge.className = "track-badge";
+        badge.textContent = `${noteCount} ノート`;
+
+        itemDiv.appendChild(label);
+        itemDiv.appendChild(badge);
+        trackListContainer.appendChild(itemDiv);
+      });
+    }
 
     // ファイル読み込み
     projectFileInput.addEventListener("change", (e) => {
@@ -284,6 +424,8 @@
             parsedProjectData = parseMidi(bytes);
           }
 
+          renderTrackList(parsedProjectData.tracks);
+
           const initialBpm =
             parsedProjectData.tempos.length > 0
               ? (
@@ -305,6 +447,7 @@
 
         } catch (err) {
           parsedProjectData = null;
+          trackSelectionGroup.style.display = "none";
 
           statusText.style.color = "#d93025";
           statusText.textContent =
@@ -354,10 +497,8 @@
         throw new Error("project.xml のXML構文が不正です");
       }
 
-      const VIRTUAL_TPQN = 96000; // 拍数を高精度Tickへ変換する係数
+      const VIRTUAL_TPQN = 96000;
       const tempos = [];
-      const noteOnTicks = [];
-      const fixedSecondsNotes = [];
 
       // (A) 初期テンポ取得 (<Transport><Tempo value="...">)
       const transportTempoEl = xmlDoc.querySelector("Transport > Tempo");
@@ -372,7 +513,6 @@
       }
 
       // (B) タイムライン上のテンポオートメーション取得
-      // <TempoAutomation> または <Points target="tempo"> 配下の <RealPoint>
       const allPoints = xmlDoc.querySelectorAll("RealPoint");
       allPoints.forEach((pt) => {
         const parent = pt.parentElement;
@@ -405,7 +545,6 @@
         }
       });
 
-      // 同一Tickに重複がある場合は後の定義を優先
       tempos.sort((a, b) => a.tick - b.tick);
       const dedupedTempos = [];
       for (const t of tempos) {
@@ -424,7 +563,6 @@
         let offset = 0;
         let unit = "beats";
 
-        // 親を辿って timeUnit と各コンテナの開始位置(time)を合算
         const ancestors = [];
         let curr = element.parentElement;
         while (curr) {
@@ -440,7 +578,6 @@
           }
 
           const tag = anc.tagName;
-          // Clip や Lanes, Warps などのコンテナが持つ開始位置オフセットを加算
           if (tag === "Clip" || tag === "Lanes" || tag === "Clips") {
             const tAttr = parseFloat(anc.getAttribute("time"));
             if (Number.isFinite(tAttr)) {
@@ -449,7 +586,6 @@
           }
         }
 
-        // Note自身のtimeUnit属性があれば優先
         const selfUnit = element.getAttribute("timeUnit");
         if (selfUnit === "seconds" || selfUnit === "beats") {
           unit = selfUnit;
@@ -458,37 +594,96 @@
         return { offset, unit };
       }
 
-      // (C) 全 <Note> 要素の抽出
+      // (C) トラック情報マップを構築 (<Structure><Track id="..." name="...">)
+      const trackMap = new Map();
+      const trackElements = xmlDoc.querySelectorAll("Structure > Track, Track");
+      let trackCounter = 1;
+
+      trackElements.forEach((trEl) => {
+        const id = trEl.getAttribute("id");
+        const contentType = trEl.getAttribute("contentType") || "";
+        // オーディオ専用トラックなどを除外したい場合は contentType で絞り込み可能だが、
+        // ノートを含む可能性があるものはすべて登録
+        if (id && !trackMap.has(id)) {
+          const rawName = trEl.getAttribute("name");
+          const label = rawName
+            ? `Track ${trackCounter}: ${rawName}`
+            : `Track ${trackCounter} (${contentType || id})`;
+          trackMap.set(id, {
+            id: trackCounter - 1,
+            name: label,
+            noteOnTicks: [],
+            fixedSecondsNotes: []
+          });
+          trackCounter++;
+        }
+      });
+
+      // トラック外（またはID未紐付け）ノート用のフォールバック
+      const unassignedTrack = {
+        id: trackCounter - 1,
+        name: "未分類 / タイムライン直下ノート",
+        noteOnTicks: [],
+        fixedSecondsNotes: []
+      };
+
+      // (D) 全 <Note> 要素の抽出とトラック振り分け
       const noteElements = xmlDoc.querySelectorAll("Note");
       noteElements.forEach((noteEl) => {
         const noteTime = parseFloat(noteEl.getAttribute("time"));
         if (!Number.isFinite(noteTime)) return;
 
-        // ミュートされたクリップ内のノートを除外したい場合はここで判定可能
         const parentClip = noteEl.closest("Clip");
         if (parentClip && parentClip.getAttribute("enable") === "false") {
           return;
+        }
+
+        // 所属トラックの特定（Lanesのtrack属性、または親Track要素）
+        let targetTrack = unassignedTrack;
+        const parentLanes = noteEl.closest("Lanes[track]");
+        if (parentLanes) {
+          const trackId = parentLanes.getAttribute("track");
+          if (trackMap.has(trackId)) {
+            targetTrack = trackMap.get(trackId);
+          }
+        } else {
+          const parentTrack = noteEl.closest("Track[id]");
+          if (parentTrack && trackMap.has(parentTrack.getAttribute("id"))) {
+            targetTrack = trackMap.get(parentTrack.getAttribute("id"));
+          }
         }
 
         const { offset, unit } = resolveTimeContext(noteEl);
         const absoluteTime = Math.max(0, offset + noteTime);
 
         if (unit === "seconds") {
-          fixedSecondsNotes.push(absoluteTime);
+          targetTrack.fixedSecondsNotes.push(absoluteTime);
         } else {
-          noteOnTicks.push(Math.round(absoluteTime * VIRTUAL_TPQN));
+          targetTrack.noteOnTicks.push(Math.round(absoluteTime * VIRTUAL_TPQN));
         }
       });
 
-      noteOnTicks.sort((a, b) => a - b);
-      fixedSecondsNotes.sort((a, b) => a - b);
+      const tracks = Array.from(trackMap.values()).filter(
+        (t) => t.noteOnTicks.length > 0 || t.fixedSecondsNotes.length > 0
+      );
+
+      if (
+        unassignedTrack.noteOnTicks.length > 0 ||
+        unassignedTrack.fixedSecondsNotes.length > 0
+      ) {
+        tracks.push(unassignedTrack);
+      }
+
+      tracks.forEach((t) => {
+        t.noteOnTicks.sort((a, b) => a - b);
+        t.fixedSecondsNotes.sort((a, b) => a - b);
+      });
 
       return {
         sourceType: "dawproject",
         ticksPerBeat: VIRTUAL_TPQN,
-        noteOnTicks,
-        tempos: dedupedTempos,
-        fixedSecondsNotes
+        tracks,
+        tempos: dedupedTempos
       };
     }
 
@@ -502,7 +697,6 @@
         zipBytes.byteLength
       );
 
-      // End of Central Directory (EOCD) を末尾から探索
       let eocdOffset = -1;
       const minEocdPos = Math.max(0, zipBytes.length - 65557);
       for (let i = zipBytes.length - 22; i >= minEocdPos; i--) {
@@ -537,7 +731,6 @@
         const fileName = decoder.decode(nameBytes);
 
         if (fileName === targetFileName) {
-          // Local File Header から実データ開始位置を計算
           const localNameLen = view.getUint16(localHeaderOffset + 26, true);
           const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
           const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
@@ -547,10 +740,8 @@
           );
 
           if (compressionMethod === 0) {
-            // 無圧縮 (STORE)
             return decoder.decode(compressedData);
           } else if (compressionMethod === 8) {
-            // DEFLATE
             if (typeof DecompressionStream === "undefined") {
               throw new Error(
                 "お使いのブラウザはDecompressionStream(DEFLATE展開)に非対応です"
@@ -577,10 +768,11 @@
     }
 
     // =========================================================
-    // 2. MIDIバイナリパーサー (Format 0 & 1 対応)
+    // 2. MIDIバイナリパーサー (Format 0 & 1 対応・トラック別抽出)
     // =========================================================
     function parseMidi(data) {
       let pos = 0;
+      const textDecoder = new TextDecoder("utf-8");
 
       function readStr(len) {
         let s = "";
@@ -636,7 +828,7 @@
       const ticksPerBeat = division;
       pos = 8 + headerLen;
 
-      const noteOnTicks = [];
+      const tracks = [];
       const tempos = [];
 
       for (let t = 0; t < numTracks; t++) {
@@ -657,6 +849,8 @@
 
         let currentTick = 0;
         let runningStatus = 0;
+        let trackName = "";
+        const trackNoteTicks = [];
 
         while (pos < trackEnd) {
           const delta = readVarLen();
@@ -680,7 +874,7 @@
             const velocity = data[pos++];
 
             if (velocity > 0) {
-              noteOnTicks.push(currentTick);
+              trackNoteTicks.push(currentTick);
             }
           } else if (
             eventType === 0x80 ||
@@ -695,7 +889,14 @@
             const metaType = data[pos++];
             const metaLen = readVarLen();
 
-            if (metaType === 0x51 && metaLen === 3) {
+            if (metaType === 0x03 && metaLen > 0) {
+              // トラック名メタイベント
+              const nameBytes = data.subarray(pos, pos + metaLen);
+              const decoded = textDecoder.decode(nameBytes).replace(/\0/g, "").trim();
+              if (decoded && !trackName) {
+                trackName = decoded;
+              }
+            } else if (metaType === 0x51 && metaLen === 3) {
               const mpqn =
                 (data[pos] << 16) |
                 (data[pos + 1] << 8) |
@@ -720,33 +921,58 @@
           }
         }
 
+        trackNoteTicks.sort((a, b) => a - b);
+
+        // ノートが存在するトラックのみリストに追加（テンポ専用トラックなどを省く）
+        if (trackNoteTicks.length > 0) {
+          const displayLabel = trackName
+            ? `Track ${t + 1}: ${trackName}`
+            : `Track ${t + 1}`;
+
+          tracks.push({
+            id: t,
+            name: displayLabel,
+            noteOnTicks: trackNoteTicks,
+            fixedSecondsNotes: []
+          });
+        }
+
         pos = trackEnd;
       }
 
-      noteOnTicks.sort((a, b) => a - b);
       tempos.sort((a, b) => a.tick - b.tick);
 
       return {
         sourceType: "midi",
         ticksPerBeat,
-        noteOnTicks,
-        tempos,
-        fixedSecondsNotes: []
+        tracks,
+        tempos
       };
     }
 
     // =========================================================
-    // 3. Tickから秒数への変換・和音統合
+    // 3. 選択トラックの統合・秒数変換・和音統合
     // =========================================================
     function updateOutput() {
       if (!parsedProjectData) return;
 
-      const {
-        ticksPerBeat,
-        noteOnTicks,
-        tempos,
-        fixedSecondsNotes = []
-      } = parsedProjectData;
+      const { ticksPerBeat, tracks, tempos } = parsedProjectData;
+
+      // チェックされているトラックのインデックスを取得
+      const selectedIndices = new Set();
+      trackListContainer
+        .querySelectorAll('input[type="checkbox"]:checked')
+        .forEach((cb) => selectedIndices.add(Number(cb.value)));
+
+      const noteOnTicks = [];
+      const fixedSecondsNotes = [];
+
+      tracks.forEach((track, idx) => {
+        if (selectedIndices.has(idx)) {
+          noteOnTicks.push(...track.noteOnTicks);
+          fixedSecondsNotes.push(...track.fixedSecondsNotes);
+        }
+      });
 
       const bpmMode = document.querySelector(
         'input[name="bpmMode"]:checked'
@@ -759,7 +985,6 @@
       );
       const offsetSec = parseFloat(offsetSecInput.value) || 0;
 
-      // 入力値チェック
       if (
         bpmMode === "manual" &&
         (!Number.isFinite(manualBpm) || manualBpm <= 0)
@@ -794,7 +1019,6 @@
         }
       }
 
-      // Tickを秒数に変換
       function tickToSeconds(targetTick) {
         let totalSec = 0;
         let lastTick = 0;
@@ -820,7 +1044,7 @@
         return totalSec;
       }
 
-      // 秒数変換とオフセット適用（拍基準ノート＋秒基準ノートを統合）
+      // 秒数変換とオフセット適用
       const convertedFromTicks = noteOnTicks.map((tick) =>
         Math.max(0, tickToSeconds(tick) + offsetSec)
       );
@@ -854,15 +1078,19 @@
 
       outputPreview.value = formattedLines.join("\n");
 
-      // 完了表示
-      statusText.style.color = "#0f9d58";
       const totalRawNotes = noteOnTicks.length + fixedSecondsNotes.length;
 
-      statusText.textContent =
-        `変換完了！ 全ノート数: ${totalRawNotes}` +
-        ` → 和音統合後のタイミング数: ${formattedLines.length}`;
-
-      downloadBtn.disabled = formattedLines.length === 0;
+      if (selectedIndices.size === 0) {
+        statusText.style.color = "#e37400";
+        statusText.textContent = "トラックが選択されていません（1つ以上選択してください）。";
+        downloadBtn.disabled = true;
+      } else {
+        statusText.style.color = "#0f9d58";
+        statusText.textContent =
+          `変換完了！（選択トラック: ${selectedIndices.size}/${tracks.length}）` +
+          ` ノート数: ${totalRawNotes} → 和音統合後: ${formattedLines.length}`;
+        downloadBtn.disabled = formattedLines.length === 0;
+      }
     }
   </script>
 
